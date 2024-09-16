@@ -1,0 +1,122 @@
+##################################################################################################################################################################
+# Cortex Search Setup
+
+# Overview
+# Cortex Search enables low-latency, high-quality “fuzzy” search over Snowflake data, supporting AI chat and Retrieval Augmented Generation (RAG) applications leveraging Large Language Models (LLMs).
+# This service offers a hybrid (vector and keyword) search engine without needing to worry about embedding, infrastructure, or index management.
+
+# When to use Cortex Search
+# - RAG for LLM chatbots: Use for contextualized responses.
+# - Enterprise search: Backend for a high-quality search bar in applications.
+
+# Executed on a snowflake trial account
+##################################################################################################################################################################
+
+#---------------------------------------------------------------------------------------------------
+# Account Setup
+
+USE ROLE ACCOUNTADMIN;
+
+-- Create a role for Cortex Search
+CREATE ROLE IF NOT EXISTS CORTEX_DEMO_ROLE;
+
+-- Create database and grant ownership to the role
+CREATE DATABASE IF NOT EXISTS CORTEX_DEMO;
+GRANT OWNERSHIP ON DATABASE CORTEX_DEMO TO ROLE CORTEX_DEMO_ROLE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON ALL SCHEMAS IN DATABASE CORTEX_DEMO TO ROLE CORTEX_DEMO_ROLE COPY CURRENT GRANTS;
+
+-- Grant role to user
+GRANT ROLE CORTEX_DEMO_ROLE TO USER RAMBASKAR2024;
+
+-- Grant database role for Cortex user
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE CORTEX_DEMO_ROLE;
+
+-- Create a dedicated warehouse
+CREATE OR REPLACE WAREHOUSE small_WH_CORTEX
+  WAREHOUSE_SIZE = 'X-SMALL';
+GRANT USAGE ON WAREHOUSE small_WH_CORTEX TO ROLE CORTEX_DEMO_ROLE;
+
+#---------------------------------------------------------------------------------------------------
+# Object Creation
+
+-- Switch to Cortex role, database, and warehouse
+USE ROLE CORTEX_DEMO_ROLE;
+USE DATABASE CORTEX_DEMO;
+USE WAREHOUSE small_WH_CORTEX;
+
+-- Create schema for Cortex
+CREATE SCHEMA IF NOT EXISTS CORTEX_DEMO_SCH;
+
+-- Create table to store customer support transcripts
+CREATE OR REPLACE TABLE support_transcripts (
+    transcript_text VARCHAR,
+    region VARCHAR,
+    agent_id VARCHAR
+);
+
+-- Insert sample data into the support_transcripts table
+INSERT INTO support_transcripts VALUES
+    ('My internet has been down since yesterday, can you help?', 'North America', 'AG1001'),
+    ('I was overcharged for my last bill, need an explanation.', 'Europe', 'AG1002'),
+    ('How do I reset my password? The email link is not working.', 'Asia', 'AG1003'),
+    ('I received a faulty router, can I get it replaced?', 'North America', 'AG1004');
+
+#---------------------------------------------------------------------------------------------------
+# Create Cortex Search Service
+
+-- Enable change tracking on the table
+ALTER TABLE support_transcripts SET CHANGE_TRACKING = TRUE;
+
+-- Create the search service
+CREATE OR REPLACE CORTEX SEARCH SERVICE transcript_search_service
+  ON transcript_text
+  ATTRIBUTES region
+  WAREHOUSE = small_WH_CORTEX
+  TARGET_LAG = '1 day'
+  AS (
+    SELECT transcript_text, region, agent_id
+    FROM CORTEX_DEMO_SCH.support_transcripts
+);
+
+-- Grant usage of the search service to the role
+USE ROLE ACCOUNTADMIN;
+GRANT USAGE ON CORTEX SEARCH SERVICE transcript_search_service TO ROLE CORTEX_DEMO_ROLE;
+
+#---------------------------------------------------------------------------------------------------
+# Service Preview and Query
+
+-- Switch back to Cortex role and environment
+USE ROLE CORTEX_DEMO_ROLE;
+USE DATABASE CORTEX_DEMO;
+USE WAREHOUSE small_WH_CORTEX;
+
+-- Preview the service
+SELECT PARSE_JSON(
+  SNOWFLAKE.CORTEX.SEARCH_PREVIEW(
+      'transcript_search_service',
+      '{
+        "query": "internet issues",
+        "columns": ["transcript_text", "region"],
+        "filter": {"@eq": {"region": "North America"}},
+        "limit": 1
+      }'
+  )
+)['results'] AS results;
+
+-- List all services in the schema
+SHOW OBJECTS IN SCHEMA CORTEX_DEMO.CORTEX_DEMO_SCH;
+
+#---------------------------------------------------------------------------------------------------
+# Environment Check
+
+-- Query environment details
+SELECT 
+    CURRENT_USER() AS user,
+    CURRENT_ROLE() AS role,
+    CURRENT_ACCOUNT() AS account,
+    CURRENT_DATABASE() AS database,
+    CURRENT_SCHEMA() AS schema,
+    CURRENT_WAREHOUSE() AS warehouse,
+    CURRENT_VERSION() AS snowflake_version;
+
+##################################################################################################################################################################
